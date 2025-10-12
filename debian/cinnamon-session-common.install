@@ -1,0 +1,2 @@
+debian/55cinnamon-session_gnomerc etc/X11/Xsession.d
+usr/share/icons/*/*/*/cinnamon-session-*

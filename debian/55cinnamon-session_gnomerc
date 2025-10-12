@@ -1,0 +1,19 @@
+# If we are running the GNOME session, source ~/.gnomerc
+
+BASESTARTUP=${STARTUP% *}
+BASESTARTUP=${BASESTARTUP##*/}
+if [ "$BASESTARTUP" = x-session-manager ]; then
+    BASESTARTUP=$(basename $(readlink /etc/alternatives/x-session-manager))
+fi
+case "$BASESTARTUP" in
+  cinnamon-session*)
+    GNOMERC=$HOME/.gnomerc
+    if [ -r "$GNOMERC" ]; then
+      . "$GNOMERC"
+    fi
+    if [ -z "$XDG_DATA_DIRS" ]; then
+      XDG_DATA_DIRS=/usr/local/share/:/usr/share/
+    fi
+    export XDG_DATA_DIRS
+    ;;
+esac
