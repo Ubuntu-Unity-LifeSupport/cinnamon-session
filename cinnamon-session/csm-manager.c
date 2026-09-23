@@ -157,6 +157,9 @@ struct CsmManagerPrivate
         CsmExportedManager     *skeleton;
         CsmExportedDialog      *dialog_skeleton;
         GDBusProxy             *cinnamon_proxy;
+        GDBusProxy             *shell_dialog_proxy;
+        gboolean                shell_dialog_wanted;
+        gboolean                shell_dialog_open;
 
         CsmLogoutAction         dialog_action;
 
@@ -198,6 +201,17 @@ static void     user_logout (CsmManager           *manager,
                              CsmManagerLogoutMode  mode);
 static void     request_shutdown (CsmManager *manager);
 static void     request_reboot (CsmManager *manager);
+static gboolean shell_dialog_available (CsmManager *manager);
+static void     on_shell_dialog_signal (GDBusProxy  *proxy,
+                                        const gchar *sender_name,
+                                        const gchar *signal_name,
+                                        GVariant    *parameters,
+                                        CsmManager  *manager);
+static gboolean open_shell_dialog (CsmManager      *manager,
+                                   CsmLogoutAction  action,
+                                   GError         **error);
+static void     launch_gtk_dialog (CsmManager *manager,
+                                   DialogMode  mode);
 static void     request_logout (CsmManager *manager, CsmManagerLogoutMode mode);
 static void     request_suspend (CsmManager *manager);
 static void     request_switch_user (CsmManager *manager);
@@ -1308,7 +1322,8 @@ end_session_or_report_inhibitors (CsmManager *manager)
 {
         CsmLogoutAction action;
 
-        if (! csm_manager_is_logout_inhibited (manager)) {
+        if (! manager->priv->shell_dialog_wanted &&
+            ! csm_manager_is_logout_inhibited (manager)) {
                 end_phase (manager);
                 return;
         }
@@ -1332,6 +1347,26 @@ end_session_or_report_inhibitors (CsmManager *manager)
                            manager->priv->logout_type);
                 action = CSM_LOGOUT_ACTION_LOGOUT;
                 break;
+        }
+
+        if (manager->priv->shell_dialog_wanted) {
+                GError *error = NULL;
+
+                /* As gnome-session does: the shell asks the user, now that
+                 * the inhibitors are known, and answers with a signal. */
+                manager->priv->shell_dialog_wanted = FALSE;
+                manager->priv->dialog_action = action;
+
+                if (open_shell_dialog (manager, action, &error))
+                        return;
+
+                g_warning ("Failed to open the shell's end-session dialog, falling back to Gtk end-session dialog: %s",
+                           error->message);
+                g_error_free (error);
+                launch_gtk_dialog (manager,
+                                   action == CSM_LOGOUT_ACTION_LOGOUT ? DIALOG_MODE_LOGOUT :
+                                   action == CSM_LOGOUT_ACTION_REBOOT ? DIALOG_MODE_REBOOT :
+                                                                        DIALOG_MODE_SHUTDOWN);
         }
 
         emit_inhibitor_info_to_dialog (manager, action);
@@ -2824,6 +2859,23 @@ register_manager (CsmManager *manager)
                                                                NULL,
                                                                &error);
 
+        manager->priv->shell_dialog_proxy = g_dbus_proxy_new_sync (manager->priv->connection,
+                                                                   G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
+                                                                   G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                                                   NULL,
+                                                                   "org.gnome.Shell",
+                                                                   "/org/gnome/SessionManager/EndSessionDialog",
+                                                                   "org.gnome.SessionManager.EndSessionDialog",
+                                                                   NULL,
+                                                                   NULL);
+
+        if (manager->priv->shell_dialog_proxy != NULL) {
+                g_signal_connect (manager->priv->shell_dialog_proxy,
+                                  "g-signal",
+                                  G_CALLBACK (on_shell_dialog_signal),
+                                  manager);
+        }
+
         skeleton = G_DBUS_INTERFACE_SKELETON (csm_exported_manager_skeleton_new ());
         manager->priv->skeleton = CSM_EXPORTED_MANAGER (skeleton);
 
@@ -4016,6 +4068,122 @@ launch_cinnamon_dialog (CsmManager  *manager,
     return TRUE;
 }
 
+/* A shell other than Cinnamon - Unity 7, or gnome-shell - may show the
+ * end-session dialog itself, speaking gnome-session's EndSessionDialog
+ * protocol on org.gnome.Shell. */
+static gboolean
+shell_dialog_available (CsmManager *manager)
+{
+    gchar *owner;
+
+    if (manager->priv->shell_dialog_proxy == NULL) {
+        return FALSE;
+    }
+
+    owner = g_dbus_proxy_get_name_owner (manager->priv->shell_dialog_proxy);
+    g_free (owner);
+
+    return owner != NULL;
+}
+
+static void
+on_shell_dialog_signal (GDBusProxy  *proxy,
+                        const gchar *sender_name,
+                        const gchar *signal_name,
+                        GVariant    *parameters,
+                        CsmManager  *manager)
+{
+    if (!manager->priv->shell_dialog_open || g_strcmp0 (signal_name, "Closed") == 0) {
+        return;
+    }
+
+    g_debug ("Shell end-session dialog: %s", signal_name);
+
+    manager->priv->shell_dialog_open = FALSE;
+
+    if (g_strcmp0 (signal_name, "Canceled") == 0) {
+        cancel_end_session (manager);
+        return;
+    }
+
+    if (g_strcmp0 (signal_name, "ConfirmedLogout") == 0) {
+        manager->priv->logout_type = CSM_MANAGER_LOGOUT_LOGOUT;
+        manager->priv->dialog_action = CSM_LOGOUT_ACTION_LOGOUT;
+    } else if (g_strcmp0 (signal_name, "ConfirmedShutdown") == 0) {
+        manager->priv->logout_type = CSM_MANAGER_LOGOUT_SHUTDOWN_INTERACT;
+        manager->priv->dialog_action = CSM_LOGOUT_ACTION_SHUTDOWN;
+    } else if (g_strcmp0 (signal_name, "ConfirmedReboot") == 0) {
+        manager->priv->logout_type = CSM_MANAGER_LOGOUT_REBOOT_INTERACT;
+        manager->priv->dialog_action = CSM_LOGOUT_ACTION_REBOOT;
+    } else {
+        manager->priv->shell_dialog_open = TRUE;
+        return;
+    }
+
+    /* The user has seen the inhibitors, if any: go ahead regardless. */
+    do_inhibit_dialog_action (manager);
+}
+
+static gboolean
+add_inhibitor_path (const char *id,
+                    GObject    *inhibitor,
+                    GVariantBuilder *builder)
+{
+    g_variant_builder_add (builder, "o", id);
+
+    return FALSE;
+}
+
+static gboolean
+open_shell_dialog (CsmManager      *manager,
+                   CsmLogoutAction  action,
+                   GError         **error)
+{
+    GVariantBuilder inhibitors;
+    GVariant *ret;
+    guint type;
+
+    /* EndSessionDialog types: logout 0, shutdown 1, restart 2 */
+    switch (action) {
+        case CSM_LOGOUT_ACTION_LOGOUT:
+            type = 0;
+            break;
+        case CSM_LOGOUT_ACTION_REBOOT:
+            type = 2;
+            break;
+        default:
+            type = 1;
+            break;
+    }
+
+    g_variant_builder_init (&inhibitors, G_VARIANT_TYPE ("ao"));
+    if (csm_manager_is_logout_inhibited (manager)) {
+        csm_store_foreach (manager->priv->inhibitors, (CsmStoreFunc) add_inhibitor_path, &inhibitors);
+    }
+
+    g_debug ("Requesting the shell's end-session dialog, type %u", type);
+
+    /* Replies and signals from the shell arrive after this returns. */
+    manager->priv->shell_dialog_open = TRUE;
+
+    ret = g_dbus_proxy_call_sync (manager->priv->shell_dialog_proxy,
+                                  "Open",
+                                  g_variant_new ("(uuuao)", type, 0, 60, &inhibitors),
+                                  G_DBUS_CALL_FLAGS_NONE,
+                                  -1,
+                                  NULL,
+                                  error);
+
+    if (ret == NULL) {
+        manager->priv->shell_dialog_open = FALSE;
+        return FALSE;
+    }
+
+    g_variant_unref (ret);
+
+    return TRUE;
+}
+
 static void
 show_end_session_dialog (CsmManager *manager,
                          DialogMode  mode)
@@ -4029,7 +4197,30 @@ show_end_session_dialog (CsmManager *manager,
     }
 
     if (!launch_cinnamon_dialog (manager, mode, &error)) {
-        if (error->code == G_DBUS_ERROR_NAME_HAS_NO_OWNER) {
+        /* Without org.Cinnamon the call fails with ServiceUnknown: the
+         * proxy may auto-start and there is nothing to start. */
+        gboolean cinnamon_absent = error->domain == G_DBUS_ERROR &&
+                                   (error->code == G_DBUS_ERROR_NAME_HAS_NO_OWNER ||
+                                    error->code == G_DBUS_ERROR_SERVICE_UNKNOWN);
+
+        if (cinnamon_absent && shell_dialog_available (manager)) {
+            g_debug ("Cinnamon is not running, asking the shell after the query phase");
+            g_error_free (error);
+
+            manager->priv->shell_dialog_wanted = TRUE;
+            switch (mode) {
+                case DIALOG_MODE_LOGOUT:
+                    request_logout (manager, CSM_MANAGER_LOGOUT_MODE_NORMAL);
+                    break;
+                case DIALOG_MODE_REBOOT:
+                    request_reboot (manager);
+                    break;
+                default:
+                    request_shutdown (manager);
+                    break;
+            }
+            return;
+        } else if (error->code == G_DBUS_ERROR_NAME_HAS_NO_OWNER) {
             g_debug ("Cinnamon is not running, falling back to Gtk end-session dialog");
         } else {
             g_critical ("Failed to launch Cinnamon's end session dialog, falling back to Gtk end-session dialog: %s", error->message);
