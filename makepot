@@ -1,0 +1,7 @@
+#!/bin/bash
+
+intltool-extract --type=gettext/glade cinnamon-session-quit/*.glade
+
+xgettext --language=C --keyword=_ --keyword=N_ --output=cinnamon-session.pot cinnamon-session-quit/*.py cinnamon-session/*.c tools/*.c cinnamon-session-quit/*.glade.h
+
+rm -f cinnamon-session-quit/*.glade.h

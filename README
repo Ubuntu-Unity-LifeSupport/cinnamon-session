@@ -1,0 +1,14 @@
+Design notes for the original gnome-session
+===========================================
+
+See http://live.gnome.org/SessionManagement
+
+
+Installation
+============
+
+See the file 'INSTALL'. If you are not using a released version of
+gnome-session (for example, if you checked out the code from git), you
+first need to run './autogen.sh'.
+
+

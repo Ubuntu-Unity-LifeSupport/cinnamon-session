@@ -1,0 +1,5 @@
+# List of source files containing translatable strings that should not be
+# translated.
+# Please keep this file sorted alphabetically.
+data/cinnamon-session.schemas.in
+data/gnome-wm.desktop.in

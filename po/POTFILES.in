@@ -1,0 +1,11 @@
+# List of source files containing translatable strings.
+# Please keep this file sorted alphabetically.
+cinnamon-session/inhibit-dialog-info.c
+cinnamon-session/csm-process-helper.c
+cinnamon-session/csm-manager.c
+cinnamon-session/csm-xsmp-client.c
+cinnamon-session/csm-xsmp-server.c
+cinnamon-session/csm-util.c
+cinnamon-session/main.c
+[type: gettext/glade]cinnamon-session-quit/cinnamon-session-quit.glade
+cinnamon-session-quit/cinnamon-session-quit.py
