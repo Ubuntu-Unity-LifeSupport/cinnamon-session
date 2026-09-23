@@ -1,0 +1,44 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Wed, 23 Sep 2026 22:42:54 +0000
+Subject: Don't ask a Cinnamon that is not running to close its dialog
+
+close_end_session_dialog() called CloseEndSessionDialog on org.Cinnamon
+whenever no Gtk dialog was running, and unreffed the result without
+checking it. Without Cinnamon every cancelled end session logged two
+criticals: the failed call, and g_variant_unref() on NULL. Skip the call
+when org.Cinnamon has no owner, and only unref a result that exists.
+
+Assisted-by: LLM claude-opus-5-5
+---
+ cinnamon-session/csm-manager.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/cinnamon-session/csm-manager.c b/cinnamon-session/csm-manager.c
+index 84de540..e96f93a 100644
+--- a/cinnamon-session/csm-manager.c
++++ b/cinnamon-session/csm-manager.c
+@@ -3939,6 +3939,13 @@ close_end_session_dialog (CsmManager *manager)
+         return;
+     }
+ 
++    gchar *owner = g_dbus_proxy_get_name_owner (manager->priv->cinnamon_proxy);
++    if (owner == NULL) {
++        /* Cinnamon is not running, so it is not showing a dialog either. */
++        return;
++    }
++    g_free (owner);
++
+     GError *error = NULL;
+     GVariant *ret = NULL;
+ 
+@@ -3951,7 +3958,9 @@ close_end_session_dialog (CsmManager *manager)
+                                   &error);
+     g_debug ("ret is: %p", ret);
+ 
+-    g_variant_unref (ret);
++    if (ret != NULL) {
++        g_variant_unref (ret);
++    }
+ 
+     if (error != NULL) {
+         g_critical ("Unable to close Cinnamon's end session dialog: %s", error->message);

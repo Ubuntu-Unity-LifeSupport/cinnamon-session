@@ -1,3 +1,15 @@
+cinnamon-session (6.4.2-1+unity1) resolute; urgency=medium
+
+  * d/p/Ask-the-shell-for-the-end-session-dialog-when-Cinnamon-is.patch:
+    when Cinnamon is not running, ask the shell on org.gnome.Shell for
+    the end-session dialog the way gnome-session does, so Ubuntu Unity
+    shows one dialog instead of two (known issue #6).
+  * d/p/Don-t-ask-a-Cinnamon-that-is-not-running-to-close-its-dia.patch:
+    stop logging two criticals on every cancelled end session without
+    Cinnamon.
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Wed, 23 Sep 2026 22:43:19 +0000
+
 cinnamon-session (6.4.2-1) unstable; urgency=medium
 
   * New upstream version 6.4.2
