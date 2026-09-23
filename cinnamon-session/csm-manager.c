@@ -3939,6 +3939,13 @@ close_end_session_dialog (CsmManager *manager)
         return;
     }
 
+    gchar *owner = g_dbus_proxy_get_name_owner (manager->priv->cinnamon_proxy);
+    if (owner == NULL) {
+        /* Cinnamon is not running, so it is not showing a dialog either. */
+        return;
+    }
+    g_free (owner);
+
     GError *error = NULL;
     GVariant *ret = NULL;
 
@@ -3951,7 +3958,9 @@ close_end_session_dialog (CsmManager *manager)
                                   &error);
     g_debug ("ret is: %p", ret);
 
-    g_variant_unref (ret);
+    if (ret != NULL) {
+        g_variant_unref (ret);
+    }
 
     if (error != NULL) {
         g_critical ("Unable to close Cinnamon's end session dialog: %s", error->message);
