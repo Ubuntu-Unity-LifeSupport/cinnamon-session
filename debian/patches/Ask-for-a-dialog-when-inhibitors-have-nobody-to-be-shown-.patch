@@ -1,0 +1,66 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Thu, 24 Sep 2026 06:31:33 +0000
+Subject: Ask for a dialog when inhibitors have nobody to be shown to
+
+When the session end is inhibited, cinnamon-session sends the inhibitors
+to the end-session dialog and waits for the user's answer. A logout
+requested without confirmation - what Unity does after its own dialog -
+opens no dialog, so without Cinnamon the inhibitors went nowhere: the
+session stayed in the query phase with nothing on screen, and every later
+logout, shutdown or reboot request was refused as not running.
+
+When no dialog is showing, ask the shell for one (or fall back to the Gtk
+dialog), the same way as when Cinnamon is absent.
+
+Assisted-by: LLM claude-opus-5-5
+---
+ cinnamon-session/csm-manager.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/cinnamon-session/csm-manager.c b/cinnamon-session/csm-manager.c
+index e96f93a..55b2ea1 100644
+--- a/cinnamon-session/csm-manager.c
++++ b/cinnamon-session/csm-manager.c
+@@ -202,6 +202,7 @@ static void     user_logout (CsmManager           *manager,
+ static void     request_shutdown (CsmManager *manager);
+ static void     request_reboot (CsmManager *manager);
+ static gboolean shell_dialog_available (CsmManager *manager);
++static gboolean end_session_dialog_is_shown (CsmManager *manager);
+ static void     on_shell_dialog_signal (GDBusProxy  *proxy,
+                                         const gchar *sender_name,
+                                         const gchar *signal_name,
+@@ -1349,7 +1350,11 @@ end_session_or_report_inhibitors (CsmManager *manager)
+                 break;
+         }
+ 
+-        if (manager->priv->shell_dialog_wanted) {
++        /* The inhibitors go to the end-session dialog. When there is none -
++         * a logout requested without confirmation, with neither Cinnamon nor
++         * the Gtk dialog running - nobody would hear about them and the
++         * session would sit in the query phase for good. Ask for a dialog. */
++        if (manager->priv->shell_dialog_wanted || !end_session_dialog_is_shown (manager)) {
+                 GError *error = NULL;
+ 
+                 /* As gnome-session does: the shell asks the user, now that
+@@ -3878,6 +3883,21 @@ request_switch_user (CsmManager *manager)
+ }
+ 
+ static GSubprocess *dialog_process = NULL;
++
++static gboolean
++end_session_dialog_is_shown (CsmManager *manager)
++{
++    gchar *owner;
++
++    if (dialog_process != NULL) {
++        return TRUE;
++    }
++
++    owner = g_dbus_proxy_get_name_owner (manager->priv->cinnamon_proxy);
++    g_free (owner);
++
++    return owner != NULL;
++}
+ static GCancellable *dialog_cancellable = NULL;
+ 
+ static void

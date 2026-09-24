@@ -1,3 +1,12 @@
+cinnamon-session (6.4.2-1+unity2) resolute; urgency=medium
+
+  * d/p/Ask-for-a-dialog-when-inhibitors-have-nobody-to-be-shown-
+    to.patch: a logout requested without confirmation no longer hangs in
+    the query phase when an application inhibits it; the inhibitors are
+    shown in the shell's dialog.
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Thu, 24 Sep 2026 06:31:48 +0000
+
 cinnamon-session (6.4.2-1+unity1) resolute; urgency=medium
 
   * d/p/Ask-the-shell-for-the-end-session-dialog-when-Cinnamon-is.patch:
