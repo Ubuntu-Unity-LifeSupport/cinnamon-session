@@ -1,3 +1,13 @@
+cinnamon-session (6.4.2-1+unity3) resolute; urgency=medium
+
+  * Backport upstream 9409c18b: take a delay inhibitor, wait for
+    logind's PrepareForShutdown and quit, instead of staying on screen
+    half torn down while another delay inhibitor holds a restart or
+    shutdown (linuxmint/cinnamon-session#214). Drops MDM support with
+    it, as upstream does.
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Fri, 25 Sep 2026 01:41:41 +0000
+
 cinnamon-session (6.4.2-1+unity2) resolute; urgency=medium
 
   * d/p/Ask-for-a-dialog-when-inhibitors-have-nobody-to-be-shown-
