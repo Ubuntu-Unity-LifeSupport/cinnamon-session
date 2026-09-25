@@ -1,0 +1,960 @@
+From: Leigh Scott <leigh123linux@gmail.com>
+Date: Mon, 21 Sep 2026 14:49:12 +0100
+Subject: csm-systemd: wait for logind's PrepareForShutdown before quitting
+ (#215)
+
+* csm-manager.c: Remove MDM support
+
+* csm-systemd: wait for logind's PrepareForShutdown before quitting
+
+(cherry picked from commit 9409c18b05af6abbb8f0ac67314680211e8fd513)
+
+Origin: upstream, https://github.com/linuxmint/cinnamon-session/commit/9409c18b05af6abbb8f0ac67314680211e8fd513
+Bug: https://github.com/linuxmint/cinnamon-session/issues/214
+Bug-Debian: https://bugs.debian.org/987612
+Applied-Upstream: 6.7 (unstable), not in a stable release yet
+Last-Update: 2026-09-25
+---
+ cinnamon-session/csm-manager.c |  62 ++----
+ cinnamon-session/csm-system.c  |  12 ++
+ cinnamon-session/csm-systemd.c | 129 ++++++++---
+ cinnamon-session/mdm.c         | 471 -----------------------------------------
+ cinnamon-session/mdm.h         |  54 -----
+ cinnamon-session/meson.build   |   1 -
+ 6 files changed, 129 insertions(+), 600 deletions(-)
+ delete mode 100644 cinnamon-session/mdm.c
+ delete mode 100644 cinnamon-session/mdm.h
+
+diff --git a/cinnamon-session/csm-manager.c b/cinnamon-session/csm-manager.c
+index 55b2ea1..5855734 100644
+--- a/cinnamon-session/csm-manager.c
++++ b/cinnamon-session/csm-manager.c
+@@ -53,7 +53,6 @@
+ #include "csm-autostart-app.h"
+ 
+ #include "csm-util.h"
+-#include "mdm.h"
+ #include "csm-system.h"
+ #include "csm-session-save.h"
+ #include "inhibit-dialog-info.h"
+@@ -73,9 +72,6 @@
+  */
+ #define CSM_MANAGER_PHASE_TIMEOUT 30 /* seconds */
+ 
+-#define MDM_FLEXISERVER_COMMAND "mdmflexiserver"
+-#define MDM_FLEXISERVER_ARGS    "--startnew Standard"
+-
+ #define GDM_FLEXISERVER_COMMAND "gdmflexiserver"
+ #define GDM_FLEXISERVER_ARGS    "--startnew Standard"
+ 
+@@ -107,10 +103,8 @@ typedef enum
+         CSM_MANAGER_LOGOUT_LOGOUT,
+         CSM_MANAGER_LOGOUT_REBOOT,
+         CSM_MANAGER_LOGOUT_REBOOT_INTERACT,
+-        CSM_MANAGER_LOGOUT_REBOOT_MDM,
+         CSM_MANAGER_LOGOUT_SHUTDOWN,
+-        CSM_MANAGER_LOGOUT_SHUTDOWN_INTERACT,
+-        CSM_MANAGER_LOGOUT_SHUTDOWN_MDM
++        CSM_MANAGER_LOGOUT_SHUTDOWN_INTERACT
+ } CsmManagerLogoutType;
+ 
+ struct CsmManagerPrivate
+@@ -472,13 +466,16 @@ phase_num_to_name (guint phase)
+ static void start_phase (CsmManager *manager);
+ 
+ static void
+-quit_request_failed (CsmSystem *system,
+-                        GError    *error,
+-                        gpointer   user_data)
++on_shutdown_prepared (CsmSystem *system,
++                      gboolean   success,
++                      gpointer   user_data)
+ {
+-        g_warning ("Using an MDM logout action to shutdown/reboot the system.");
+-        MdmLogoutAction fallback_action = GPOINTER_TO_INT (user_data);
+-        mdm_set_logout_action (fallback_action);
++        g_signal_handlers_disconnect_by_func (system, on_shutdown_prepared, user_data);
++
++        if (!success) {
++                g_warning ("Shutdown/restart was not confirmed by logind");
++        }
++
+         csm_quit ();
+ }
+ 
+@@ -497,31 +494,21 @@ csm_manager_quit (CsmManager *manager)
+         case CSM_MANAGER_LOGOUT_REBOOT:
+         case CSM_MANAGER_LOGOUT_REBOOT_INTERACT:
+                 g_warning ("Requesting system restart...");
+-                mdm_set_logout_action (MDM_LOGOUT_ACTION_NONE);
+                 g_signal_connect (manager->priv->system,
+-                                  "request-failed",
+-                                  G_CALLBACK (quit_request_failed),
+-                                  GINT_TO_POINTER (MDM_LOGOUT_ACTION_REBOOT));
++                                  "shutdown-prepared",
++                                  G_CALLBACK (on_shutdown_prepared),
++                                  manager);
+                 csm_system_attempt_restart (manager->priv->system);
+                 break;
+-        case CSM_MANAGER_LOGOUT_REBOOT_MDM:
+-                mdm_set_logout_action (MDM_LOGOUT_ACTION_REBOOT);
+-                csm_quit ();
+-                break;
+         case CSM_MANAGER_LOGOUT_SHUTDOWN:
+-        case CSM_MANAGER_LOGOUT_SHUTDOWN_INTERACT:  
++        case CSM_MANAGER_LOGOUT_SHUTDOWN_INTERACT:
+                 g_warning ("Requesting system shutdown...");
+-                mdm_set_logout_action (MDM_LOGOUT_ACTION_NONE);
+                 g_signal_connect (manager->priv->system,
+-                                  "request-failed",
+-                                  G_CALLBACK (quit_request_failed),
+-                                  GINT_TO_POINTER (MDM_LOGOUT_ACTION_SHUTDOWN));
++                                  "shutdown-prepared",
++                                  G_CALLBACK (on_shutdown_prepared),
++                                  manager);
+                 csm_system_attempt_stop (manager->priv->system);
+                 break;
+-        case CSM_MANAGER_LOGOUT_SHUTDOWN_MDM:
+-                mdm_set_logout_action (MDM_LOGOUT_ACTION_SHUTDOWN);
+-                csm_quit ();
+-                break;
+         default:
+                 g_assert_not_reached ();
+                 break;
+@@ -1106,7 +1093,6 @@ cancel_end_session (CsmManager *manager)
+         manager->priv->logout_mode = CSM_MANAGER_LOGOUT_MODE_NORMAL;
+ 
+         manager->priv->logout_type = CSM_MANAGER_LOGOUT_NONE;
+-        mdm_set_logout_action (MDM_LOGOUT_ACTION_NONE);
+ 
+         manager->priv->dialog_action = CSM_LOGOUT_ACTION_UNDEFINED;
+ 
+@@ -1171,7 +1157,7 @@ flexiserver_launch (const gchar **argv)
+                             NULL,
+                             &error)) {
+                 if (error) {
+-                        g_debug ("CsmManager: Unable to start MDM greeter: %s", error->message);
++                        g_debug ("CsmManager: Unable to start greeter: %s", error->message);
+                         g_error_free (error);
+                 }
+         }
+@@ -1190,15 +1176,7 @@ manager_switch_user (CsmManager *manager)
+                 return;
+         }
+ 
+-        if (process_is_running ("mdm")) {
+-                const gchar *command[] = {
+-                     MDM_FLEXISERVER_COMMAND,
+-                     MDM_FLEXISERVER_ARGS,
+-                     NULL
+-                };
+-
+-                flexiserver_launch (command);
+-        } else if (process_is_running("gdm") || process_is_running("gdm3")) {
++        if (process_is_running("gdm") || process_is_running("gdm3")) {
+                 const gchar *command[] = {
+                      GDM_FLEXISERVER_COMMAND,
+                      GDM_FLEXISERVER_ARGS,
+@@ -1335,12 +1313,10 @@ end_session_or_report_inhibitors (CsmManager *manager)
+                 break;
+         case CSM_MANAGER_LOGOUT_REBOOT:
+         case CSM_MANAGER_LOGOUT_REBOOT_INTERACT:
+-        case CSM_MANAGER_LOGOUT_REBOOT_MDM:
+                 action = CSM_LOGOUT_ACTION_REBOOT;
+                 break;
+         case CSM_MANAGER_LOGOUT_SHUTDOWN:
+         case CSM_MANAGER_LOGOUT_SHUTDOWN_INTERACT:
+-        case CSM_MANAGER_LOGOUT_SHUTDOWN_MDM:
+                 action = CSM_LOGOUT_ACTION_SHUTDOWN;
+                 break;
+         default:
+diff --git a/cinnamon-session/csm-system.c b/cinnamon-session/csm-system.c
+index 3e42f2c..2c20992 100644
+--- a/cinnamon-session/csm-system.c
++++ b/cinnamon-session/csm-system.c
+@@ -30,6 +30,7 @@
+ 
+ enum {
+         REQUEST_FAILED = 0,
++        SHUTDOWN_PREPARED,
+         LAST_SIGNAL
+ };
+ 
+@@ -50,6 +51,17 @@ csm_system_default_init (CsmSystemInterface *iface)
+                               g_cclosure_marshal_VOID__POINTER,
+                               G_TYPE_NONE,
+                               1, G_TYPE_POINTER);
++
++        signals [SHUTDOWN_PREPARED] =
++                g_signal_new ("shutdown-prepared",
++                              CSM_TYPE_SYSTEM,
++                              G_SIGNAL_RUN_LAST,
++                              0,
++                              NULL,
++                              NULL,
++                              g_cclosure_marshal_VOID__BOOLEAN,
++                              G_TYPE_NONE,
++                              1, G_TYPE_BOOLEAN);
+ }
+ 
+ GQuark
+diff --git a/cinnamon-session/csm-systemd.c b/cinnamon-session/csm-systemd.c
+index 9db59d1..7341584 100644
+--- a/cinnamon-session/csm-systemd.c
++++ b/cinnamon-session/csm-systemd.c
+@@ -61,10 +61,18 @@ struct _CsmSystemdPrivate
+ 
+         GSList          *inhibitors;
+         gint             inhibit_fd;
++        gint             shutdown_inhibit_fd;
++        gboolean         prepare_for_shutdown_expected;
+ };
+ 
+ static void csm_systemd_system_init (CsmSystemInterface *iface);
+ 
++static void sd_proxy_signal_cb (GDBusProxy  *proxy,
++                                const gchar *sender_name,
++                                const gchar *signal_name,
++                                GVariant    *parameters,
++                                gpointer     user_data);
++
+ G_DEFINE_TYPE_WITH_CODE (CsmSystemd, csm_systemd, G_TYPE_OBJECT,
+                          G_IMPLEMENT_INTERFACE (CSM_TYPE_SYSTEM,
+                                                 csm_systemd_system_init))
+@@ -92,6 +100,9 @@ csm_systemd_finalize (GObject *object)
+                 g_slist_free_full (systemd->priv->inhibitors, g_free);
+         }
+         drop_system_inhibitor (systemd);
++        if (systemd->priv->shutdown_inhibit_fd != -1) {
++                close (systemd->priv->shutdown_inhibit_fd);
++        }
+ 
+         G_OBJECT_CLASS (csm_systemd_parent_class)->finalize (object);
+ }
+@@ -120,6 +131,7 @@ csm_systemd_init (CsmSystemd *manager)
+                                                      CsmSystemdPrivate);
+ 
+         manager->priv->inhibit_fd = -1;
++        manager->priv->shutdown_inhibit_fd = -1;
+ 
+         error = NULL;
+ 
+@@ -143,6 +155,9 @@ csm_systemd_init (CsmSystemd *manager)
+                         g_warning ("Failed to connect to systemd: %s",
+                                    error->message);
+                         g_error_free (error);
++                } else {
++                        g_signal_connect (manager->priv->sd_proxy, "g-signal",
++                                          G_CALLBACK (sd_proxy_signal_cb), manager);
+                 }
+ 
+                 g_object_unref (bus);
+@@ -174,21 +189,62 @@ csm_systemd_init (CsmSystemd *manager)
+ }
+ 
+ static void
+-restart_done (GObject      *source,
+-              GAsyncResult *result,
+-              gpointer      user_data)
++take_shutdown_inhibitor (CsmSystemd *manager)
++{
++        GVariant *res;
++        GUnixFDList *fd_list = NULL;
++        GError *error = NULL;
++        gint idx;
++
++        if (manager->priv->shutdown_inhibit_fd != -1)
++                return;
++
++        res = g_dbus_proxy_call_with_unix_fd_list_sync (manager->priv->sd_proxy,
++                                                        "Inhibit",
++                                                        g_variant_new ("(ssss)",
++                                                                       "shutdown",
++                                                                       g_get_user_name (),
++                                                                       "Ensuring session exits cleanly before shutdown",
++                                                                       "delay"),
++                                                        0,
++                                                        G_MAXINT,
++                                                        NULL,
++                                                        &fd_list,
++                                                        NULL,
++                                                        &error);
++        if (res == NULL) {
++                g_warning ("Unable to inhibit shutdown: %s", error->message);
++                g_error_free (error);
++                return;
++        }
++
++        g_variant_get (res, "(h)", &idx);
++        manager->priv->shutdown_inhibit_fd = g_unix_fd_list_get (fd_list, idx, &error);
++        if (manager->priv->shutdown_inhibit_fd == -1) {
++                g_warning ("Failed to receive shutdown inhibitor fd: %s", error->message);
++                g_error_free (error);
++        }
++
++        g_object_unref (fd_list);
++        g_variant_unref (res);
++}
++
++static void
++reboot_or_poweroff_done (GObject      *source,
++                         GAsyncResult *result,
++                         gpointer      user_data)
+ {
+-        GDBusProxy *proxy = G_DBUS_PROXY (source);
+         CsmSystemd *manager = user_data;
+         GError *error = NULL;
+         GVariant *res;
+ 
+-        res = g_dbus_proxy_call_finish (proxy, result, &error);
++        res = g_dbus_proxy_call_finish (G_DBUS_PROXY (source), result, &error);
+ 
+-        if (!res) {
+-                g_warning ("Unable to restart system via systemd: %s", error->message);
+-                g_signal_emit_by_name (G_OBJECT (manager), "request-failed", NULL);
++        if (res == NULL) {
++                g_warning ("Unable to shutdown/restart system via systemd: %s", error->message);
+                 g_error_free (error);
++                manager->priv->prepare_for_shutdown_expected = FALSE;
++                g_signal_emit_by_name (manager, "shutdown-prepared", FALSE);
+         } else {
+                 g_variant_unref (res);
+         }
+@@ -201,37 +257,20 @@ csm_systemd_attempt_restart (CsmSystem *system)
+ 
+         CsmSystemd *manager = CSM_SYSTEMD (system);
+ 
++        drop_system_inhibitor (manager);
++        take_shutdown_inhibitor (manager);
++        manager->priv->prepare_for_shutdown_expected = TRUE;
++
+         g_dbus_proxy_call (manager->priv->sd_proxy,
+                            "Reboot",
+                            g_variant_new ("(b)", TRUE),
+                            0,
+                            G_MAXINT,
+                            NULL,
+-                           restart_done,
++                           reboot_or_poweroff_done,
+                            manager);
+ }
+ 
+-static void
+-stop_done (GObject      *source,
+-           GAsyncResult *result,
+-           gpointer      user_data)
+-{
+-        GDBusProxy *proxy = G_DBUS_PROXY (source);
+-        CsmSystemd *manager = user_data;
+-        GError *error = NULL;
+-        GVariant *res;
+-
+-        res = g_dbus_proxy_call_finish (proxy, result, &error);
+-
+-        if (!res) {
+-                g_warning ("Unable to stop system via systemd: %s", error->message);
+-                g_signal_emit_by_name (G_OBJECT (manager), "request-failed", NULL);                
+-                g_error_free (error);
+-        } else {                
+-                g_variant_unref (res);
+-        }
+-}
+-
+ static void
+ csm_systemd_attempt_stop (CsmSystem *system)
+ {
+@@ -239,16 +278,44 @@ csm_systemd_attempt_stop (CsmSystem *system)
+ 
+         CsmSystemd *manager = CSM_SYSTEMD (system);
+ 
++        drop_system_inhibitor (manager);
++        take_shutdown_inhibitor (manager);
++        manager->priv->prepare_for_shutdown_expected = TRUE;
++
+         g_dbus_proxy_call (manager->priv->sd_proxy,
+                            "PowerOff",
+                            g_variant_new ("(b)", TRUE),
+                            0,
+                            G_MAXINT,
+                            NULL,
+-                           stop_done,
++                           reboot_or_poweroff_done,
+                            manager);
+ }
+ 
++static void
++sd_proxy_signal_cb (GDBusProxy  *proxy,
++                    const gchar *sender_name,
++                    const gchar *signal_name,
++                    GVariant    *parameters,
++                    gpointer     user_data)
++{
++        CsmSystemd *manager = user_data;
++        gboolean is_about_to_shutdown;
++
++        if (g_strcmp0 (signal_name, "PrepareForShutdown") != 0)
++                return;
++
++        g_variant_get (parameters, "(b)", &is_about_to_shutdown);
++        if (!is_about_to_shutdown)
++                return;
++
++        if (manager->priv->prepare_for_shutdown_expected) {
++                g_debug ("Shutdown successfully prepared");
++                manager->priv->prepare_for_shutdown_expected = FALSE;
++                g_signal_emit_by_name (manager, "shutdown-prepared", TRUE);
++        }
++}
++
+ static void
+ csm_systemd_set_session_idle (CsmSystem *system,
+                               gboolean   is_idle)
+diff --git a/cinnamon-session/mdm.c b/cinnamon-session/mdm.c
+deleted file mode 100644
+index 3aeeeeb..0000000
+--- a/cinnamon-session/mdm.c
++++ /dev/null
+@@ -1,471 +0,0 @@
+-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 8 -*-
+- *
+- * Copyright (C) 2005 Raffaele Sandrini
+- * Copyright (C) 2005 Red Hat, Inc.
+- * Copyright (C) 2002, 2003 George Lebl
+- * Copyright (C) 2001 Queen of England,
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of the
+- * License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin Street - Suite 500, Boston, MA
+- * 02110-1335, USA.
+- *
+- * Authors:
+- *      Raffaele Sandrini <rasa@gmx.ch>
+- *      George Lebl <jirka@5z.com>
+- *      Mark McLoughlin <mark@skynet.ie>
+- */
+-
+-#ifdef HAVE_CONFIG_H
+-#include <config.h>
+-#endif
+-
+-#include <string.h>
+-#include <errno.h>
+-#include <unistd.h>
+-#include <time.h>
+-#include <sys/socket.h>
+-#include <sys/un.h>
+-
+-#include <X11/Xauth.h>
+-#include <gdk/gdk.h>
+-
+-#include "mdm.h"
+-
+-#define MDM_PROTOCOL_UPDATE_INTERVAL 1 /* seconds */
+-
+-#define MDM_PROTOCOL_SOCKET_PATH "/var/run/gdm_socket"
+-
+-#define MDM_PROTOCOL_MSG_CLOSE         "CLOSE"
+-#define MDM_PROTOCOL_MSG_VERSION       "VERSION"
+-#define MDM_PROTOCOL_MSG_AUTHENTICATE  "AUTH_LOCAL"
+-#define MDM_PROTOCOL_MSG_QUERY_ACTION  "QUERY_LOGOUT_ACTION"
+-#define MDM_PROTOCOL_MSG_SET_ACTION    "SET_SAFE_LOGOUT_ACTION"
+-#define MDM_PROTOCOL_MSG_FLEXI_XSERVER "FLEXI_XSERVER"
+-
+-#define MDM_ACTION_STR_NONE     "NONE"
+-#define MDM_ACTION_STR_SHUTDOWN "HALT"
+-#define MDM_ACTION_STR_REBOOT   "REBOOT"
+-#define MDM_ACTION_STR_SUSPEND  "SUSPEND"
+-
+-typedef struct {
+-        int             fd;
+-        char           *auth_cookie;
+-
+-        MdmLogoutAction available_actions;
+-        MdmLogoutAction current_actions;
+-
+-        time_t          last_update;
+-} MdmProtocolData;
+-
+-static MdmProtocolData mdm_protocol_data = {
+-        0,
+-        NULL,
+-        MDM_LOGOUT_ACTION_NONE,
+-        MDM_LOGOUT_ACTION_NONE,
+-        0
+-};
+-
+-static char *
+-mdm_send_protocol_msg (MdmProtocolData *data,
+-                       const char      *msg)
+-{
+-        GString *retval;
+-        char buf[256];
+-        char *p;
+-        int len;
+-
+-        p = g_strconcat (msg, "\n", NULL);
+-
+-        if (write (data->fd, p, strlen (p)) < 0) {
+-                g_free (p);
+-
+-                g_warning ("Failed to send message to MDM: %s",
+-                           g_strerror (errno));
+-
+-                return NULL;
+-        }
+-
+-        g_free (p);
+-
+-        p = NULL;
+-        retval = NULL;
+-
+-        while ((len = read (data->fd, buf, sizeof (buf) - 1)) > 0) {
+-                buf[len] = '\0';
+-
+-                if (!retval) {
+-                        retval = g_string_new (buf);
+-                } else {
+-                        retval = g_string_append (retval, buf);
+-                }
+-
+-                if ((p = strchr (retval->str, '\n'))) {
+-                        break;
+-                }
+-        }
+-
+-        if (p) {
+-                *p = '\0';
+-        }
+-
+-        return retval ? g_string_free (retval, FALSE) : NULL;
+-}
+-
+-static char *
+-get_display_number (void)
+-{
+-        const char *display_name;
+-        char       *retval;
+-        char       *p;
+-
+-        display_name = gdk_display_get_name (gdk_display_get_default ());
+-
+-        p = strchr (display_name, ':');
+-
+-        if (!p) {
+-                return g_strdup ("0");
+-        }
+-
+-        while (*p == ':') {
+-                p++;
+-        }
+-
+-        retval = g_strdup (p);
+-
+-        p = strchr (retval, '.');
+-
+-        if (p != NULL) {
+-                *p = '\0';
+-        }
+-
+-        return retval;
+-}
+-
+-static gboolean
+-mdm_authenticate_connection (MdmProtocolData *data)
+-{
+-#define MDM_MIT_MAGIC_COOKIE_LEN 16
+-
+-        const char *xau_path;
+-        FILE *f;
+-        Xauth *xau;
+-        char *display_number;
+-        gboolean retval;
+-
+-        if (data->auth_cookie) {
+-                char *msg;
+-                char *response;
+-
+-                msg = g_strdup_printf (MDM_PROTOCOL_MSG_AUTHENTICATE " %s",
+-                                       data->auth_cookie);
+-                response = mdm_send_protocol_msg (data, msg);
+-                g_free (msg);
+-
+-                if (response && !strcmp (response, "OK")) {
+-                        g_free (response);
+-                        return TRUE;
+-                } else {
+-                        g_free (response);
+-                        g_free (data->auth_cookie);
+-                        data->auth_cookie = NULL;
+-                }
+-        }
+-
+-        if (!(xau_path = XauFileName ())) {
+-                return FALSE;
+-        }
+-
+-        if (!(f = fopen (xau_path, "r"))) {
+-                return FALSE;
+-        }
+-
+-        retval = FALSE;
+-        display_number = get_display_number ();
+-
+-        while ((xau = XauReadAuth (f))) {
+-                char buffer[40]; /* 2*16 == 32, so 40 is enough */
+-                char *msg;
+-                char *response;
+-                int   i;
+-
+-                if (xau->family != FamilyLocal ||
+-                    strncmp (xau->number, display_number, xau->number_length) ||
+-                    strncmp (xau->name, "MIT-MAGIC-COOKIE-1", xau->name_length) ||
+-                    xau->data_length != MDM_MIT_MAGIC_COOKIE_LEN) {
+-                        XauDisposeAuth (xau);
+-                        continue;
+-                }
+-
+-                for (i = 0; i < MDM_MIT_MAGIC_COOKIE_LEN; i++) {
+-                        g_snprintf (buffer + 2*i, 3, "%02x", (guint)(guchar)xau->data[i]);
+-                }
+-
+-                XauDisposeAuth (xau);
+-
+-                msg = g_strdup_printf (MDM_PROTOCOL_MSG_AUTHENTICATE " %s", buffer);
+-                response = mdm_send_protocol_msg (data, msg);
+-                g_free (msg);
+-
+-                if (response && !strcmp (response, "OK")) {
+-                        data->auth_cookie = g_strdup (buffer);
+-                        g_free (response);
+-                        retval = TRUE;
+-                        break;
+-                }
+-
+-                g_free (response);
+-        }
+-
+-        g_free (display_number);
+-
+-        fclose (f);
+-
+-        return retval;
+-
+-#undef MDM_MIT_MAGIC_COOKIE_LEN
+-}
+-
+-static void
+-mdm_shutdown_protocol_connection (MdmProtocolData *data)
+-{
+-        if (data->fd) {
+-                close (data->fd);
+-        }
+-
+-        data->fd = 0;
+-}
+-
+-static gboolean
+-mdm_init_protocol_connection (MdmProtocolData *data)
+-{
+-        struct sockaddr_un addr;
+-        char              *response;
+-
+-        g_assert (data->fd <= 0);
+-
+-        if (g_file_test (MDM_PROTOCOL_SOCKET_PATH, G_FILE_TEST_EXISTS)) {
+-                strcpy (addr.sun_path, MDM_PROTOCOL_SOCKET_PATH);
+-        } else if (g_file_test ("/tmp/.mdm_socket", G_FILE_TEST_EXISTS)) {
+-                strcpy (addr.sun_path, "/tmp/.mdm_socket");
+-        } else {
+-                return FALSE;
+-        }
+-
+-        data->fd = socket (AF_UNIX, SOCK_STREAM, 0);
+-
+-        if (data->fd < 0) {
+-                g_warning ("Failed to create MDM socket: %s",
+-                           g_strerror (errno));
+-
+-                mdm_shutdown_protocol_connection (data);
+-
+-                return FALSE;
+-        }
+-
+-        addr.sun_family = AF_UNIX;
+-
+-        if (connect (data->fd, (struct sockaddr *) &addr, sizeof (addr)) < 0) {
+-                g_warning ("Failed to establish a connection with MDM: %s",
+-                           g_strerror (errno));
+-
+-                mdm_shutdown_protocol_connection (data);
+-
+-                return FALSE;
+-        }
+-
+-        response = mdm_send_protocol_msg (data, MDM_PROTOCOL_MSG_VERSION);
+-
+-        if (!response || strncmp (response, "MDM ", strlen ("MDM ")) != 0) {
+-                g_free (response);
+-
+-                g_warning ("Failed to get protocol version from MDM");
+-                mdm_shutdown_protocol_connection (data);
+-
+-                return FALSE;
+-        }
+-
+-        g_free (response);
+-
+-        if (!mdm_authenticate_connection (data)) {
+-                g_warning ("Failed to authenticate with MDM");
+-                mdm_shutdown_protocol_connection (data);
+-                return FALSE;
+-        }
+-
+-        return TRUE;
+-}
+-
+-static void
+-mdm_parse_query_response (MdmProtocolData *data,
+-                          const char      *response)
+-{
+-        char **actions;
+-        int i;
+-
+-        data->available_actions = MDM_LOGOUT_ACTION_NONE;
+-        data->current_actions   = MDM_LOGOUT_ACTION_NONE;
+-
+-        if (strncmp (response, "OK ", 3) != 0) {
+-                return;
+-        }
+-
+-        response += 3;
+-
+-        actions = g_strsplit (response, ";", -1);
+-
+-        for (i = 0; actions[i]; i++) {
+-                MdmLogoutAction action = MDM_LOGOUT_ACTION_NONE;
+-                gboolean        selected = FALSE;
+-                char           *str = actions [i];
+-                int             len;
+-
+-                len = strlen (str);
+-
+-                if (!len) {
+-                        continue;
+-                }
+-
+-                if (str[len - 1] == '!') {
+-                        selected = TRUE;
+-                        str[len - 1] = '\0';
+-                }
+-
+-                if (!strcmp (str, MDM_ACTION_STR_SHUTDOWN)) {
+-                        action = MDM_LOGOUT_ACTION_SHUTDOWN;
+-                } else if (!strcmp (str, MDM_ACTION_STR_REBOOT)) {
+-                        action = MDM_LOGOUT_ACTION_REBOOT;
+-                } else if (!strcmp (str, MDM_ACTION_STR_SUSPEND)) {
+-                        action = MDM_LOGOUT_ACTION_SUSPEND;
+-                }
+-
+-                data->available_actions |= action;
+-
+-                if (selected) {
+-                        data->current_actions |= action;
+-                }
+-        }
+-
+-        g_strfreev (actions);
+-}
+-
+-static void
+-mdm_update_logout_actions (MdmProtocolData *data)
+-{
+-        time_t current_time;
+-        char  *response;
+-
+-        current_time = time (NULL);
+-
+-        if (current_time <= (data->last_update + MDM_PROTOCOL_UPDATE_INTERVAL)) {
+-                return;
+-        }
+-
+-        data->last_update = current_time;
+-
+-        if (!mdm_init_protocol_connection (data)) {
+-                return;
+-        }
+-
+-        if ((response = mdm_send_protocol_msg (data, MDM_PROTOCOL_MSG_QUERY_ACTION))) {
+-                mdm_parse_query_response (data, response);
+-                g_free (response);
+-        }
+-
+-        mdm_shutdown_protocol_connection (data);
+-}
+-
+-gboolean
+-mdm_is_available (void)
+-{
+-        if (!mdm_init_protocol_connection (&mdm_protocol_data)) {
+-                return FALSE;
+-        }
+-
+-        mdm_shutdown_protocol_connection (&mdm_protocol_data);
+-
+-        return TRUE;
+-}
+-
+-gboolean
+-mdm_supports_logout_action (MdmLogoutAction action)
+-{
+-        mdm_update_logout_actions (&mdm_protocol_data);
+-
+-        return (mdm_protocol_data.available_actions & action) != 0;
+-}
+-
+-MdmLogoutAction
+-mdm_get_logout_action (void)
+-{
+-        mdm_update_logout_actions (&mdm_protocol_data);
+-
+-        return mdm_protocol_data.current_actions;
+-}
+-
+-void
+-mdm_set_logout_action (MdmLogoutAction action)
+-{
+-        char *action_str = NULL;
+-        char *msg;
+-        char *response;
+-
+-        if (!mdm_init_protocol_connection (&mdm_protocol_data)) {
+-                return;
+-        }
+-
+-        switch (action) {
+-        case MDM_LOGOUT_ACTION_NONE:
+-                action_str = MDM_ACTION_STR_NONE;
+-                break;
+-        case MDM_LOGOUT_ACTION_SHUTDOWN:
+-                action_str = MDM_ACTION_STR_SHUTDOWN;
+-                break;
+-        case MDM_LOGOUT_ACTION_REBOOT:
+-                action_str = MDM_ACTION_STR_REBOOT;
+-                break;
+-        case MDM_LOGOUT_ACTION_SUSPEND:
+-                action_str = MDM_ACTION_STR_SUSPEND;
+-                break;
+-        }
+-
+-        msg = g_strdup_printf (MDM_PROTOCOL_MSG_SET_ACTION " %s", action_str);
+-
+-        response = mdm_send_protocol_msg (&mdm_protocol_data, msg);
+-
+-        g_free (msg);
+-        g_free (response);
+-
+-        mdm_protocol_data.last_update = 0;
+-
+-        mdm_shutdown_protocol_connection (&mdm_protocol_data);
+-}
+-
+-void
+-mdm_new_login (void)
+-{
+-        char *response;
+-
+-        if (!mdm_init_protocol_connection (&mdm_protocol_data)) {
+-                return;
+-        }
+-
+-        response = mdm_send_protocol_msg (&mdm_protocol_data,
+-                                          MDM_PROTOCOL_MSG_FLEXI_XSERVER);
+-
+-        g_free (response);
+-
+-        mdm_protocol_data.last_update = 0;
+-
+-        mdm_shutdown_protocol_connection (&mdm_protocol_data);
+-}
+diff --git a/cinnamon-session/mdm.h b/cinnamon-session/mdm.h
+deleted file mode 100644
+index 2bdb5f3..0000000
+--- a/cinnamon-session/mdm.h
++++ /dev/null
+@@ -1,54 +0,0 @@
+-/* mdm.h
+- * Copyright (C) 2005 Raffaele Sandrini
+- * Copyright (C) 2005 Red Hat, Inc.
+- * Copyright (C) 2002, 2003 George Lebl
+- * Copyright (C) 2001 Queen of England, 
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of the
+- * License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin Street - Suite 500, Boston, MA
+- * 02110-1335, USA.
+- *
+- * Authors:
+- *      Raffaele Sandrini <rasa@gmx.ch>
+- *      George Lebl <jirka@5z.com>
+- *      Mark McLoughlin <mark@skynet.ie>
+- */
+-
+-#ifndef __MDM_LOGOUT_ACTION_H__
+-#define __MDM_LOGOUT_ACTION_H__
+-
+-#include <glib.h>
+-
+-G_BEGIN_DECLS
+-
+-typedef enum {
+-  MDM_LOGOUT_ACTION_NONE     = 0,
+-  MDM_LOGOUT_ACTION_SHUTDOWN = 1 << 0,
+-  MDM_LOGOUT_ACTION_REBOOT   = 1 << 1,
+-  MDM_LOGOUT_ACTION_SUSPEND  = 1 << 2
+-} MdmLogoutAction;
+-
+-gboolean         mdm_is_available            (void);
+-
+-void             mdm_new_login               (void);
+-
+-void             mdm_set_logout_action       (MdmLogoutAction action);
+-
+-MdmLogoutAction  mdm_get_logout_action       (void);
+-
+-gboolean         mdm_supports_logout_action  (MdmLogoutAction action);
+-
+-G_END_DECLS
+-
+-#endif /* __MDM_LOGOUT_ACTION_H__ */
+diff --git a/cinnamon-session/meson.build b/cinnamon-session/meson.build
+index 073755d..61b4737 100644
+--- a/cinnamon-session/meson.build
++++ b/cinnamon-session/meson.build
+@@ -49,7 +49,6 @@ cinnamon_session_sources = [
+   'main.c',
+   'mdm-log.c',
+   'mdm-signal-handler.c',
+-  'mdm.c',
+   csm_marshal_sources,
+   gdbus_sources,
+ ]
