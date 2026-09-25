@@ -5,6 +5,9 @@ cinnamon-session (6.4.2-1+unity3) resolute; urgency=medium
     half torn down while another delay inhibitor holds a restart or
     shutdown (linuxmint/cinnamon-session#214). Drops MDM support with
     it, as upstream does.
+  * Request the reboot or shutdown only once: end_phase() reached
+    csm_manager_quit() for every client exiting during the EXIT phase,
+    and under Unity logind refused the repeats.
 
  -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Fri, 25 Sep 2026 01:41:41 +0000
 
