@@ -158,6 +158,7 @@ struct CsmManagerPrivate
         CsmLogoutAction         dialog_action;
 
         gboolean                dbus_disconnected : 1;
+        gboolean                quit_requested : 1;
         guint                   name_owner_id;
 
         ca_context             *ca;
@@ -484,6 +485,12 @@ csm_manager_quit (CsmManager *manager)
 {
         /* See the comment in request_reboot() for some more details about how
          * this works. */
+
+        /* end_phase() runs again for every client that exits during the
+         * EXIT phase; request the reboot or shutdown once. */
+        if (manager->priv->quit_requested)
+                return;
+        manager->priv->quit_requested = TRUE;
 
         csm_store_clear (manager->priv->inhibitors);
 
