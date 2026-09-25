@@ -1,0 +1,42 @@
+From: Ubuntu Unity Life Support <mihail.rozshko@gmail.com>
+Date: Fri, 25 Sep 2026 01:45:39 +0000
+Subject: Request the reboot or shutdown only once
+
+end_phase() is called again each time a client exits during the EXIT
+phase, and each call reached csm_manager_quit(). Under Unity, where many
+clients go away at once, a restart was requested twelve times in 120 ms
+on target; logind refused all but the first with OperationInProgress,
+and cinnamon-session took the refusal as a failed restart. With the
+PrepareForShutdown backport that meant quitting on a false "not
+confirmed by logind" instead of on logind's signal.
+
+Assisted-by: LLM claude-opus-5-5
+---
+ cinnamon-session/csm-manager.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/cinnamon-session/csm-manager.c b/cinnamon-session/csm-manager.c
+index 5855734..7620661 100644
+--- a/cinnamon-session/csm-manager.c
++++ b/cinnamon-session/csm-manager.c
+@@ -158,6 +158,7 @@ struct CsmManagerPrivate
+         CsmLogoutAction         dialog_action;
+ 
+         gboolean                dbus_disconnected : 1;
++        gboolean                quit_requested : 1;
+         guint                   name_owner_id;
+ 
+         ca_context             *ca;
+@@ -485,6 +486,12 @@ csm_manager_quit (CsmManager *manager)
+         /* See the comment in request_reboot() for some more details about how
+          * this works. */
+ 
++        /* end_phase() runs again for every client that exits during the
++         * EXIT phase; request the reboot or shutdown once. */
++        if (manager->priv->quit_requested)
++                return;
++        manager->priv->quit_requested = TRUE;
++
+         csm_store_clear (manager->priv->inhibitors);
+ 
+         switch (manager->priv->logout_type) {
