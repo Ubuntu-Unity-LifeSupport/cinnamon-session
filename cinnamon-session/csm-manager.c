@@ -2879,6 +2879,14 @@ register_manager (CsmManager *manager)
                 exit(1);
         }
 
+        /* SessionIsActive follows the system backend's view of our logind
+         * session; SYNC_CREATE sets the value before any client can read
+         * the property, so that one created right after the export sees
+         * the right value (gnome-session bug 745762) */
+        g_object_bind_property (manager->priv->system, "active",
+                                skeleton, "session-is-active",
+                                G_BINDING_SYNC_CREATE);
+
         for (i = 0; i < G_N_ELEMENTS (skeleton_signals); i++) {
                 SkeletonSignal sig = skeleton_signals[i];
 

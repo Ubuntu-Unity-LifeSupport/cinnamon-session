@@ -41,6 +41,18 @@ G_DEFINE_INTERFACE (CsmSystem, csm_system, G_TYPE_OBJECT)
 static void
 csm_system_default_init (CsmSystemInterface *iface)
 {
+        /* Whether the session this manager runs is the active one on its
+         * seat (logind's Session.Active); exported by the manager as
+         * org.gnome.SessionManager.SessionIsActive, as gnome-session does.
+         * TRUE until a backend knows better: a session that cannot be
+         * found must not look inactive. */
+        g_object_interface_install_property (iface,
+                                             g_param_spec_boolean ("active",
+                                                                   "Active",
+                                                                   "Whether the session is the active one",
+                                                                   TRUE,
+                                                                   G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
         signals [REQUEST_FAILED] =
                 g_signal_new ("request-failed",
                               CSM_TYPE_SYSTEM,

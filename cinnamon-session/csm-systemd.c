@@ -58,6 +58,8 @@ struct _CsmSystemdPrivate
         GDBusProxy      *sd_proxy;
         char            *session_id;
         gchar           *session_path;
+        GDBusProxy      *session_proxy;
+        gboolean         is_active;
 
         GSList          *inhibitors;
         gint             inhibit_fd;
@@ -92,6 +94,7 @@ csm_systemd_finalize (GObject *object)
 {
         CsmSystemd *systemd = CSM_SYSTEMD (object);
 
+        g_clear_object (&systemd->priv->session_proxy);
         g_clear_object (&systemd->priv->sd_proxy);
         free (systemd->priv->session_id);
         g_free (systemd->priv->session_path);
@@ -107,6 +110,141 @@ csm_systemd_finalize (GObject *object)
         G_OBJECT_CLASS (csm_systemd_parent_class)->finalize (object);
 }
 
+enum {
+        PROP_0,
+        PROP_ACTIVE
+};
+
+static void
+csm_systemd_set_property (GObject      *object,
+                          guint         prop_id,
+                          const GValue *value,
+                          GParamSpec   *pspec)
+{
+        CsmSystemd *self = CSM_SYSTEMD (object);
+
+        switch (prop_id) {
+        case PROP_ACTIVE:
+                self->priv->is_active = g_value_get_boolean (value);
+                break;
+        default:
+                G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+        }
+}
+
+static void
+csm_systemd_get_property (GObject    *object,
+                          guint       prop_id,
+                          GValue     *value,
+                          GParamSpec *pspec)
+{
+        CsmSystemd *self = CSM_SYSTEMD (object);
+
+        switch (prop_id) {
+        case PROP_ACTIVE:
+                g_value_set_boolean (value, self->priv->is_active);
+                break;
+        default:
+                G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+        }
+}
+
+/* logind's Session.Active changed: the session became, or stopped being,
+ * the active one on its seat (a VT switch, fast user switching). */
+static void
+session_proxy_properties_changed (GDBusProxy *proxy,
+                                  GVariant   *changed,
+                                  GStrv       invalidated,
+                                  CsmSystemd *manager)
+{
+        GVariant *v;
+        gboolean active;
+
+        v = g_variant_lookup_value (changed, "Active", G_VARIANT_TYPE_BOOLEAN);
+        if (v == NULL)
+                return;
+        active = g_variant_get_boolean (v);
+        g_variant_unref (v);
+
+        if (manager->priv->is_active != active) {
+                g_debug ("logind session %s is now %s",
+                         manager->priv->session_id, active ? "active" : "inactive");
+                manager->priv->is_active = active;
+                g_object_notify (G_OBJECT (manager), "active");
+        }
+}
+
+/* The display session of this user, when this process is not in a
+ * session scope itself: cinnamon-session started by a systemd user service
+ * (unity-session.service) has no session of its own for sd_pid_get_session.
+ * logind's User.Display names the user's primary graphical session. */
+static char *
+find_display_session (GDBusProxy *sd_proxy)
+{
+        GVariant *res;
+        GVariant *user;
+        char *user_path = NULL;
+        char *session_id = NULL;
+        GError *error = NULL;
+
+        res = g_dbus_proxy_call_sync (sd_proxy, "GetUser",
+                                      g_variant_new ("(u)", (guint32) getuid ()),
+                                      G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL, &error);
+        if (res == NULL) {
+                g_debug ("logind GetUser failed: %s", error->message);
+                g_error_free (error);
+                return NULL;
+        }
+        g_variant_get (res, "(o)", &user_path);
+        g_variant_unref (res);
+
+        user = g_dbus_connection_call_sync (g_dbus_proxy_get_connection (sd_proxy),
+                                            SD_NAME, user_path,
+                                            "org.freedesktop.DBus.Properties", "Get",
+                                            g_variant_new ("(ss)", "org.freedesktop.login1.User", "Display"),
+                                            G_VARIANT_TYPE ("(v)"),
+                                            G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL, &error);
+        g_free (user_path);
+        if (user == NULL) {
+                g_debug ("logind User.Display failed: %s", error->message);
+                g_error_free (error);
+                return NULL;
+        } else {
+                GVariant *v;
+                const char *id;
+
+                g_variant_get (user, "(v)", &v);
+                g_variant_get (v, "(&s&o)", &id, NULL);
+                if (id != NULL && *id != '\0')
+                        session_id = strdup (id);
+                g_variant_unref (v);
+                g_variant_unref (user);
+        }
+
+        return session_id;
+}
+
+/* The object path of a session id, or NULL when logind does not know it;
+ * every candidate id is verified this way before it is trusted. */
+static char *
+get_session_path (GDBusProxy *sd_proxy,
+                  const char *session_id)
+{
+        GVariant *res;
+        char *path = NULL;
+
+        if (session_id == NULL || *session_id == '\0')
+                return NULL;
+        res = g_dbus_proxy_call_sync (sd_proxy, "GetSession",
+                                      g_variant_new ("(s)", session_id),
+                                      G_DBUS_CALL_FLAGS_NONE, G_MAXINT, NULL, NULL);
+        if (res == NULL)
+                return NULL;
+        g_variant_get (res, "(o)", &path);
+        g_variant_unref (res);
+        return path;
+}
+
 static void
 csm_systemd_class_init (CsmSystemdClass *manager_class)
 {
@@ -115,6 +253,10 @@ csm_systemd_class_init (CsmSystemdClass *manager_class)
         object_class = G_OBJECT_CLASS (manager_class);
 
         object_class->finalize = csm_systemd_finalize;
+        object_class->get_property = csm_systemd_get_property;
+        object_class->set_property = csm_systemd_set_property;
+
+        g_object_class_override_property (object_class, PROP_ACTIVE, "active");
 
         g_type_class_add_private (manager_class, sizeof (CsmSystemdPrivate));
 }
@@ -124,7 +266,6 @@ csm_systemd_init (CsmSystemd *manager)
 {
         GError *error;
         GDBusConnection *bus;
-        GVariant *res;
 
         manager->priv = G_TYPE_INSTANCE_GET_PRIVATE (manager,
                                                      CSM_TYPE_SYSTEMD,
@@ -163,29 +304,69 @@ csm_systemd_init (CsmSystemd *manager)
                 g_object_unref (bus);
         }
 
+        /* active until a session is found and says otherwise */
+        manager->priv->is_active = TRUE;
+
+        if (manager->priv->sd_proxy == NULL)
+                return;
+
+        /* Find our session: the one this process is in; failing that, the
+         * one the login put into the environment; failing that, the user's
+         * display session. Each candidate must be known to logind. */
         sd_pid_get_session (getpid (), &manager->priv->session_id);
+        manager->priv->session_path = get_session_path (manager->priv->sd_proxy,
+                                                        manager->priv->session_id);
+        if (manager->priv->session_path == NULL) {
+                const char *env_id = g_getenv ("XDG_SESSION_ID");
 
-        if (manager->priv->session_id == NULL) {
+                free (manager->priv->session_id);
+                manager->priv->session_id = env_id != NULL ? strdup (env_id) : NULL;
+                manager->priv->session_path = get_session_path (manager->priv->sd_proxy,
+                                                                manager->priv->session_id);
+        }
+        if (manager->priv->session_path == NULL) {
+                free (manager->priv->session_id);
+                manager->priv->session_id = find_display_session (manager->priv->sd_proxy);
+                manager->priv->session_path = get_session_path (manager->priv->sd_proxy,
+                                                                manager->priv->session_id);
+        }
+
+        if (manager->priv->session_path == NULL) {
+                free (manager->priv->session_id);
+                manager->priv->session_id = NULL;
                 g_warning ("Could not get session id for session. Check that logind is "
                            "properly installed and pam_systemd is getting used at login.");
                 return;
         }
+        g_debug ("logind session %s at %s", manager->priv->session_id, manager->priv->session_path);
 
-        res = g_dbus_proxy_call_sync (manager->priv->sd_proxy,
-                                      "GetSession",
-                                      g_variant_new ("(s)", manager->priv->session_id),
-                                      0,
-                                      G_MAXINT,
-                                      NULL,
-                                      NULL);
-        if (res == NULL) {
-                g_warning ("Could not get session id for session. Check that logind is "
-                           "properly installed and pam_systemd is getting used at login.");
-                return;
+        /* The session's Active property, with its changes, is the value
+         * behind org.gnome.SessionManager.SessionIsActive */
+        manager->priv->session_proxy =
+                g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+                                               G_DBUS_PROXY_FLAGS_NONE,
+                                               NULL,
+                                               SD_NAME,
+                                               manager->priv->session_path,
+                                               SD_SESSION_INTERFACE,
+                                               NULL,
+                                               &error);
+        if (manager->priv->session_proxy == NULL) {
+                g_warning ("Could not watch logind session %s: %s",
+                           manager->priv->session_id, error->message);
+                g_error_free (error);
+        } else {
+                GVariant *v;
+
+                v = g_dbus_proxy_get_cached_property (manager->priv->session_proxy, "Active");
+                if (v != NULL) {
+                        manager->priv->is_active = g_variant_get_boolean (v);
+                        g_variant_unref (v);
+                }
+                g_signal_connect (manager->priv->session_proxy, "g-properties-changed",
+                                  G_CALLBACK (session_proxy_properties_changed), manager);
         }
 
-        g_variant_get (res, "(o)", &manager->priv->session_path);
-        g_variant_unref (res);
 }
 
 static void
