@@ -3,3 +3,4 @@ Don-t-ask-a-Cinnamon-that-is-not-running-to-close-its-dia.patch
 Ask-for-a-dialog-when-inhibitors-have-nobody-to-be-shown-.patch
 csm-systemd-wait-for-logind-s-PrepareForShutdown-before-q.patch
 Request-the-reboot-or-shutdown-only-once.patch
+Export-SessionIsActive-on-org.gnome.SessionManager.patch
