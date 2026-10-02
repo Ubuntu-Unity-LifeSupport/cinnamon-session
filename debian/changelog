@@ -1,3 +1,19 @@
+cinnamon-session (6.4.2-1+unity4) resolute; urgency=medium
+
+  * Export SessionIsActive on org.gnome.SessionManager, as gnome-session
+    does since 3.7.2: logind's Session.Active of our session, followed on
+    change (new patch Export-SessionIsActive-on-org.gnome.SessionManager).
+    unity-settings-daemon's plugins read it: without it the automount helper
+    never mounted a hot-plugged medium in a Unity session, the color plugin
+    logged an assertion on every property change and the power plugin's
+    idle handling never ran. The session is found even when cinnamon-session
+    runs as a systemd user service (unity-session.service): by the process's
+    own session, XDG_SESSION_ID, or logind's User.Display, each verified
+    with GetSession; the "Could not get session id for session" warning at
+    every login goes away with it.
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Fri, 02 Oct 2026 22:17:07 +0000
+
 cinnamon-session (6.4.2-1+unity3) resolute; urgency=medium
 
   * Backport upstream 9409c18b: take a delay inhibitor, wait for
