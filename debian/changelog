@@ -1,3 +1,19 @@
+cinnamon-session (6.4.2-1+unity5) resolute; urgency=medium
+
+  * Take only this user's open graphical logind session as the session
+    behind SessionIsActive and the idle hint (new patch
+    Take-only-this-user-s-open-graphical-session): each candidate must be
+    owned by the user, active or online, of class user (the process's own
+    session may also be a greeter) and of type x11, wayland or mir.
+    Rejections are logged at debug level.
+  * Handle a missing or removed logind session in the systemd backend (new
+    patch Handle-a-missing-or-removed-logind-session-in-the-systemd):
+    switching users no longer reads an unset seat when no session was found,
+    the idle hint is not sent without a session, and a removed session is
+    logged and no longer called.
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Fri, 09 Oct 2026 01:08:04 +0000
+
 cinnamon-session (6.4.2-1+unity4) resolute; urgency=medium
 
   * Export SessionIsActive on org.gnome.SessionManager, as gnome-session
