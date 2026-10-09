@@ -4,3 +4,4 @@ Ask-for-a-dialog-when-inhibitors-have-nobody-to-be-shown-.patch
 csm-systemd-wait-for-logind-s-PrepareForShutdown-before-q.patch
 Request-the-reboot-or-shutdown-only-once.patch
 Export-SessionIsActive-on-org.gnome.SessionManager.patch
+Take-only-this-user-s-open-graphical-session.patch

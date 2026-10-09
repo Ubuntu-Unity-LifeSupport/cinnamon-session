@@ -1,0 +1,162 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Fri, 9 Oct 2026 01:07:08 +0000
+Subject: Take only this user's open graphical session
+
+The logind session behind SessionIsActive and SetIdleHint was the first
+candidate logind knew: the process's own session, XDG_SESSION_ID, or the
+user's display session. GetSession resolves any user's session, and
+logind's display session can be a text session, so a stale or inherited
+id could name a session that is not ours.
+
+Each candidate now also has to be owned by this user, be active or online
+(not closing), be of class "user" (the process's own session may also be
+a greeter) and be of type x11, wayland or mir, checked in that order with
+sd-login; a session that ends during the checks is rejected, and every
+rejection is logged at debug level. When no candidate is left, behaviour
+is as before: a warning, and the session counts as active.
+
+Assisted-by: LLM claude-opus-5-5
+---
+ cinnamon-session/csm-systemd.c | 117 +++++++++++++++++++++++++++++++++++------
+ 1 file changed, 100 insertions(+), 17 deletions(-)
+
+diff --git a/cinnamon-session/csm-systemd.c b/cinnamon-session/csm-systemd.c
+index 3333a23..3b3a7ef 100644
+--- a/cinnamon-session/csm-systemd.c
++++ b/cinnamon-session/csm-systemd.c
+@@ -245,6 +245,96 @@ get_session_path (GDBusProxy *sd_proxy,
+         return path;
+ }
+ 
++/* Whether a candidate session id may be ours: owned by this user, open
++ * (active, or online on another VT), of class user and graphical; the
++ * process's own session may also be a greeter. Checked in that order, so
++ * nothing of another user's session is looked at beyond its owner. A
++ * session that ends during the checks is rejected. */
++static gboolean
++candidate_usable (const char *source,
++                  const char *session_id,
++                  gboolean    allow_greeter)
++{
++        char *state = NULL;
++        char *class = NULL;
++        char *type = NULL;
++        gboolean usable = FALSE;
++        uid_t uid;
++        int r;
++
++        if (session_id == NULL || *session_id == '\0')
++                return FALSE;
++
++        r = sd_session_get_uid (session_id, &uid);
++        if (r < 0) {
++                g_debug ("logind session %s (%s) rejected: no owner: %s",
++                         session_id, source, g_strerror (-r));
++                return FALSE;
++        }
++        if (uid != getuid ()) {
++                g_debug ("logind session %s (%s) rejected: owned by another user",
++                         session_id, source);
++                return FALSE;
++        }
++
++        r = sd_session_get_state (session_id, &state);
++        if (r < 0 || (g_strcmp0 (state, "active") != 0 && g_strcmp0 (state, "online") != 0)) {
++                g_debug ("logind session %s (%s) rejected: state %s",
++                         session_id, source, r < 0 ? g_strerror (-r) : state);
++                goto out;
++        }
++
++        r = sd_session_get_class (session_id, &class);
++        if (r < 0 || (g_strcmp0 (class, "user") != 0 &&
++                      !(allow_greeter && g_strcmp0 (class, "greeter") == 0))) {
++                g_debug ("logind session %s (%s) rejected: class %s",
++                         session_id, source, r < 0 ? g_strerror (-r) : class);
++                goto out;
++        }
++
++        r = sd_session_get_type (session_id, &type);
++        if (r < 0 || (g_strcmp0 (type, "x11") != 0 && g_strcmp0 (type, "wayland") != 0 &&
++                      g_strcmp0 (type, "mir") != 0)) {
++                g_debug ("logind session %s (%s) rejected: type %s",
++                         session_id, source, r < 0 ? g_strerror (-r) : type);
++                goto out;
++        }
++
++        usable = TRUE;
++out:
++        free (state);
++        free (class);
++        free (type);
++        return usable;
++}
++
++/* Take a candidate (owned by the caller, freed here unless taken) as our
++ * session if it is usable and logind gives its object path. */
++static gboolean
++use_candidate (CsmSystemd *manager,
++               const char *source,
++               char       *session_id,
++               gboolean    allow_greeter)
++{
++        char *path;
++
++        if (!candidate_usable (source, session_id, allow_greeter)) {
++                free (session_id);
++                return FALSE;
++        }
++        path = get_session_path (manager->priv->sd_proxy, session_id);
++        if (path == NULL) {
++                g_debug ("logind session %s (%s) rejected: unknown to logind",
++                         session_id, source);
++                free (session_id);
++                return FALSE;
++        }
++        g_debug ("logind session %s taken from %s", session_id, source);
++        manager->priv->session_id = session_id;
++        manager->priv->session_path = path;
++        return TRUE;
++}
++
+ static void
+ csm_systemd_class_init (CsmSystemdClass *manager_class)
+ {
+@@ -312,28 +402,21 @@ csm_systemd_init (CsmSystemd *manager)
+ 
+         /* Find our session: the one this process is in; failing that, the
+          * one the login put into the environment; failing that, the user's
+-         * display session. Each candidate must be known to logind. */
+-        sd_pid_get_session (getpid (), &manager->priv->session_id);
+-        manager->priv->session_path = get_session_path (manager->priv->sd_proxy,
+-                                                        manager->priv->session_id);
+-        if (manager->priv->session_path == NULL) {
++         * display session. Each candidate must be usable (candidate_usable)
++         * and known to logind. */
++        {
++                char *own_id = NULL;
+                 const char *env_id = g_getenv ("XDG_SESSION_ID");
+ 
+-                free (manager->priv->session_id);
+-                manager->priv->session_id = env_id != NULL ? strdup (env_id) : NULL;
+-                manager->priv->session_path = get_session_path (manager->priv->sd_proxy,
+-                                                                manager->priv->session_id);
+-        }
+-        if (manager->priv->session_path == NULL) {
+-                free (manager->priv->session_id);
+-                manager->priv->session_id = find_display_session (manager->priv->sd_proxy);
+-                manager->priv->session_path = get_session_path (manager->priv->sd_proxy,
+-                                                                manager->priv->session_id);
++                sd_pid_get_session (getpid (), &own_id);
++                if (!use_candidate (manager, "own process", own_id, TRUE) &&
++                    !use_candidate (manager, "XDG_SESSION_ID",
++                                    env_id != NULL ? strdup (env_id) : NULL, FALSE))
++                        use_candidate (manager, "User.Display",
++                                       find_display_session (manager->priv->sd_proxy), FALSE);
+         }
+ 
+         if (manager->priv->session_path == NULL) {
+-                free (manager->priv->session_id);
+-                manager->priv->session_id = NULL;
+                 g_warning ("Could not get session id for session. Check that logind is "
+                            "properly installed and pam_systemd is getting used at login.");
+                 return;
