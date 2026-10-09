@@ -1,0 +1,87 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Fri, 9 Oct 2026 01:07:39 +0000
+Subject: Handle a missing or removed logind session in the systemd backend
+
+csm_systemd_can_switch_user() passed an unset seat to
+sd_seat_can_multi_session() and free() when no session had been found.
+That call is deprecated and always true since systemd 246; return TRUE,
+as gnome-session does since 49.
+
+csm_systemd_set_session_idle() called SetIdleHint with a NULL object path
+when there was no session; it now returns without a call.
+
+When logind removes our session, log it, forget the session path and drop
+the proxy on the session, so nothing more is sent to it; the "active"
+property keeps its last value.
+
+Assisted-by: LLM claude-opus-5-5
+---
+ cinnamon-session/csm-systemd.c | 38 +++++++++++++++++++++++++++++---------
+ 1 file changed, 29 insertions(+), 9 deletions(-)
+
+diff --git a/cinnamon-session/csm-systemd.c b/cinnamon-session/csm-systemd.c
+index 3b3a7ef..2958830 100644
+--- a/cinnamon-session/csm-systemd.c
++++ b/cinnamon-session/csm-systemd.c
+@@ -566,6 +566,26 @@ sd_proxy_signal_cb (GDBusProxy  *proxy,
+         CsmSystemd *manager = user_data;
+         gboolean is_about_to_shutdown;
+ 
++        if (g_strcmp0 (signal_name, "SessionRemoved") == 0) {
++                const char *id;
++
++                g_variant_get (parameters, "(&s&o)", &id, NULL);
++                if (manager->priv->session_id == NULL ||
++                    g_strcmp0 (id, manager->priv->session_id) != 0)
++                        return;
++                /* our session ended: no more calls on it; "active" keeps
++                 * its last value */
++                g_warning ("logind session %s (%s) was removed",
++                           manager->priv->session_id,
++                           manager->priv->session_path != NULL ? manager->priv->session_path : "-");
++                g_clear_pointer (&manager->priv->session_path, g_free);
++                if (manager->priv->session_proxy != NULL) {
++                        g_signal_handlers_disconnect_by_data (manager->priv->session_proxy, manager);
++                        g_clear_object (&manager->priv->session_proxy);
++                }
++                return;
++        }
++
+         if (g_strcmp0 (signal_name, "PrepareForShutdown") != 0)
+                 return;
+ 
+@@ -587,6 +607,11 @@ csm_systemd_set_session_idle (CsmSystem *system,
+         CsmSystemd *manager = CSM_SYSTEMD (system);
+         GDBusConnection *bus;
+ 
++        if (manager->priv->sd_proxy == NULL || manager->priv->session_path == NULL) {
++                g_debug ("No logind session, idle status %d not sent", is_idle);
++                return;
++        }
++
+         g_debug ("Updating systemd idle status: %d", is_idle);
+         bus = g_dbus_proxy_get_connection (manager->priv->sd_proxy);
+         g_dbus_connection_call (bus,
+@@ -601,18 +626,13 @@ csm_systemd_set_session_idle (CsmSystem *system,
+                                 NULL, NULL, NULL);
+ }
+ 
++/* Every seat supports several sessions: sd_seat_can_multi_session() is
++ * deprecated and always true since systemd 246 (as gnome-session ead0435f).
++ * The old code also used an unset seat when no session had been found. */
+ static gboolean
+ csm_systemd_can_switch_user (CsmSystem *system)
+ {
+-        CsmSystemd *manager = CSM_SYSTEMD (system);
+-        gchar *seat;
+-        gint ret;
+-
+-        sd_session_get_seat (manager->priv->session_id, &seat);
+-        ret = sd_seat_can_multi_session (seat);
+-        free (seat);
+-
+-        return ret > 0;
++        return TRUE;
+ }
+ 
+ static gboolean
