@@ -15,7 +15,9 @@ means never.
 
 Until the binding is made the presence keeps its construct default of
 300 s; no idle watch reaches the idle monitor before then. The existing
-seconds-to-milliseconds mapping wraps above 4294967 s, as before.
+seconds-to-milliseconds mapping is unchanged: values above 2147483 s exceed
+the idle-timeout property's maximum (G_MAXINT ms) and are rejected with a
+warning, and above 4294967 s the product wraps, as before.
 
 Forwarded: no
 Last-Update: 2026-10-13

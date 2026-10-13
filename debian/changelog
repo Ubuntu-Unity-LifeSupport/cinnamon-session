@@ -13,9 +13,9 @@ cinnamon-session (6.4.2-1+unity7) resolute; urgency=medium
     suspend still honours the inhibitors (unity-settings-daemon checks the
     session manager's InhibitedActions before arming it). A suspend the
     user asks for (Unity's dialog, the session indicator, the suspend key)
-    is no longer refused while an application inhibits suspend; Unity's
-    Suspend button, the indicator's restart and power off, and the
-    critical battery action work again in that case.
+    is no longer refused while an application inhibits suspend: logind no
+    longer answers "challenge" to the session's CanSuspend, CanReboot and
+    CanPowerOff in that case.
   * debian/dbus-override.service.conf: a drop-in for the user
     dbus.service with OOMPolicy=continue, so that a kernel OOM kill of a
     program D-Bus started does not stop the session bus. It applies to

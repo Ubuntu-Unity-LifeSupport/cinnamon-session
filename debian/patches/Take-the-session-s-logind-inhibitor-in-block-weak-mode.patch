@@ -33,7 +33,7 @@ Ref: https://github.com/linuxmint/cinnamon/issues/13219
 Assisted-by: Claude Code:claude-opus-5-5
 
 Origin: upstream, https://github.com/linuxmint/cinnamon-session/pull/219 (commit 5fcc18b23677e8f6415f0d432d9ac1b84b1541e9)
-Forwarded: not-needed
+Forwarded: https://github.com/linuxmint/cinnamon-session/pull/219 (open, not merged upstream as of 2026-10-13)
 Last-Update: 2026-10-13
 ---
  cinnamon-session/csm-systemd.c | 12 ++++++++++--
