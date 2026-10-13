@@ -1,3 +1,30 @@
+cinnamon-session (6.4.2-1+unity7) resolute; urgency=medium
+
+  * d/p/Take-the-idle-delay-from-the-Unity-Control-Center-in-a-Un.patch:
+    in a Unity session the presence's idle delay follows
+    org.gnome.desktop.session idle-delay (set by the Unity Control Center,
+    live) instead of org.cinnamon.desktop.session; elsewhere unchanged.
+  * d/p/Take-the-session-s-logind-inhibitor-in-block-weak-mode.patch
+    (upstream PR #219, not merged yet): the logind lock cinnamon-session
+    takes for applications' suspend inhibitors is taken in block-weak mode
+    when logind supports it. Since systemd 257 a block lock also applied to
+    the session itself: logind answered "challenge" to CanSuspend,
+    CanReboot and CanPowerOff while an application inhibited suspend. Idle
+    suspend still honours the inhibitors (unity-settings-daemon checks the
+    session manager's InhibitedActions before arming it). A suspend the
+    user asks for (Unity's dialog, the session indicator, the suspend key)
+    is no longer refused while an application inhibits suspend; Unity's
+    Suspend button, the indicator's restart and power off, and the
+    critical battery action work again in that case.
+  * debian/dbus-override.service.conf: a drop-in for the user
+    dbus.service with OOMPolicy=continue, so that a kernel OOM kill of a
+    program D-Bus started does not stop the session bus. It applies to
+    every user's dbus.service on the machine. Drop this file and its line
+    in cinnamon-session.install when rebasing onto 6.7.6 or later, which
+    install the same path.
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Tue, 13 Oct 2026 14:28:12 +0000
+
 cinnamon-session (6.4.2-1+unity6) resolute; urgency=medium
 
   * d/p/Fix-connection-lifetime-in-the-XSMP-server.patch: each ICE
