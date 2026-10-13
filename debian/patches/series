@@ -7,3 +7,4 @@ Export-SessionIsActive-on-org.gnome.SessionManager.patch
 Take-only-this-user-s-open-graphical-session.patch
 Handle-a-missing-or-removed-logind-session-in-the-systemd.patch
 Fix-connection-lifetime-in-the-XSMP-server.patch
+Take-the-idle-delay-from-the-Unity-Control-Center-in-a-Un.patch
