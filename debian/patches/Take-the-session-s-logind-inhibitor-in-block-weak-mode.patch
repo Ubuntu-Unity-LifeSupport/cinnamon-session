@@ -1,0 +1,75 @@
+From 5fcc18b23677e8f6415f0d432d9ac1b84b1541e9 Mon Sep 17 00:00:00 2001
+From: Fabio Fantoni <fantonifabio@tiscali.it>
+Date: Sat, 26 Sep 2026 17:37:36 +0200
+Subject: [PATCH] csm-systemd.c: Take the session's logind inhibitor in
+ block-weak mode when available.
+
+Since systemd 257, logind always obeys "block" inhibitors, including the
+ones held by the user who requests the operation (before, those were
+ignored for the same user and for root). The "sleep:shutdown" inhibitor
+that cinnamon-session takes on behalf of applications inhibiting suspend
+(Rhythmbox while playing, browsers playing media, ...) now blocks the
+session itself:
+
+- closing the lid: csd-power locks the screen and calls Suspend(), which
+is refused, so the laptop stays on;
+- end-session dialog: logind answers "inhibited" to
+CanSuspend/CanPowerOff/CanReboot, so suspend, restart and shut down are
+not offered, and "Ignore and continue" for suspend does nothing.
+
+The "block-weak" mode, added in systemd 257, keeps the previous
+semantics. Suspend on idle still honours the inhibitors, since csd-power
+checks the session inhibitors itself before arming the sleep timeout.
+gnome-session did the same (39d51c9e6, "systemd: Downgrade suspend
+inhibitor to block-weak").
+
+systemd-logind and elogind older than 257 don't know "block-weak": there
+the inhibitor is still taken in "block" mode, which on those versions is
+ignored for the same user anyway. The BlockWeakInhibited property, added
+together with the new mode, tells the two apart.
+
+Ref: https://github.com/linuxmint/cinnamon/issues/13219
+
+Assisted-by: Claude Code:claude-opus-5-5
+
+Origin: upstream, https://github.com/linuxmint/cinnamon-session/pull/219 (commit 5fcc18b23677e8f6415f0d432d9ac1b84b1541e9)
+Forwarded: not-needed
+Last-Update: 2026-10-13
+---
+ cinnamon-session/csm-systemd.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/cinnamon-session/csm-systemd.c b/cinnamon-session/csm-systemd.c
+index bd6a70b..3ade9ca 100644
+--- a/cinnamon-session/csm-systemd.c
++++ b/cinnamon-session/csm-systemd.c
+@@ -684,19 +684,27 @@ csm_systemd_add_inhibitor (CsmSystem        *system,
+                            CsmInhibitorFlag  flag)
+ {
+         CsmSystemd *manager = CSM_SYSTEMD (system);
++        GVariant *block_weak;
++        const gchar *mode;
+ 
+         if ((flag & CSM_INHIBITOR_FLAG_SUSPEND) == 0)
+                 return;
+ 
+         if (manager->priv->inhibitors == NULL) {
+-                g_debug ("Adding system inhibitor");
++                /* Since 257, logind obeys "block" even for the user holding it;
++                 * older versions don't know "block-weak" nor this property. */
++                block_weak = g_dbus_proxy_get_cached_property (manager->priv->sd_proxy, "BlockWeakInhibited");
++                mode = block_weak != NULL ? "block-weak" : "block";
++                g_clear_pointer (&block_weak, g_variant_unref);
++
++                g_debug ("Adding system inhibitor (%s)", mode);
+                 g_dbus_proxy_call_with_unix_fd_list (manager->priv->sd_proxy,
+                                                      "Inhibit",
+                                                      g_variant_new ("(ssss)",
+                                                                     "sleep:shutdown",
+                                                                     g_get_user_name (),
+                                                                     "user session inhibited",
+-                                                                    "block"),
++                                                                    mode),
+                                                      0,
+                                                      G_MAXINT,
+                                                      NULL,
