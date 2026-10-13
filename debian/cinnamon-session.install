@@ -3,3 +3,4 @@ usr/lib/*/cinnamon-session*
 usr/share/cinnamon-session
 usr/share/glib-2.0/schemas/org.cinnamon.SessionManager.gschema.xml
 usr/share/man/*/cinnamon-session*
+debian/dbus-override.service.conf usr/lib/systemd/user/dbus.service.d/
