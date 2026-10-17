@@ -1,3 +1,21 @@
+cinnamon-session (6.4.2-1+unity8) resolute; urgency=medium
+
+  * d/p/Give-clients-of-an-inactive-session-a-grace-period-befo.patch:
+    a logout requested without confirmation from a session that is not the
+    active one (switched away from) no longer waits for an end-session
+    dialog nobody can see. Clients that have not answered get one phase
+    timeout more; if the session is still inactive then, the logout goes
+    on without them. Clients that answer, including to save or interact,
+    are handled as before (UNITY-20260927-014).
+  * d/p/Connect-a-client-s-disconnected-signal-only-once.patch: a
+    registered XSMP client's disconnection was handled twice
+    (UNITY-20261013-009).
+  * d/p/Clear-the-client-s-watch-id-when-its-IO-watch-stops.patch: the
+    client no longer keeps the id of an IO watch GLib has destroyed
+    (UNITY-20261013-010).
+
+ -- Ubuntu Unity Life Support <mihail.rozshko@gmail.com>  Sat, 17 Oct 2026 04:25:58 +0000
+
 cinnamon-session (6.4.2-1+unity7) resolute; urgency=medium
 
   * d/p/Take-the-idle-delay-from-the-Unity-Control-Center-in-a-Un.patch:
