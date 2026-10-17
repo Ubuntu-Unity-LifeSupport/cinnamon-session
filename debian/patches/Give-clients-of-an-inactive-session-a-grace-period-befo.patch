@@ -1,0 +1,81 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Sat, 17 Oct 2026 04:40:00 +0000
+Subject: csm-manager.c: Give clients of an inactive session a grace period
+ before logging out
+
+A logout requested without confirmation adds a "Not responding" inhibitor
+for every client that has not answered the end-session query after one
+second, and the inhibitors then wait for the user's answer in the
+end-session dialog. When the session is not the active one - switched
+away from, with another session or the greeter in front - nobody can see
+that dialog, and the session stays in the query phase for good. compiz
+is such a client: it does not answer while its session is in the
+background.
+
+When the session is inactive, give the clients that have not answered
+one phase timeout more instead of adding the inhibitors. A client that
+answers in that time - including one that asks to interact or to cancel
+- is handled as before. If the session is still inactive when the time
+is up, the logout goes on without the clients that never answered; if it
+has become active, the inhibitors are added as before.
+
+Assisted-by: Claude Code:claude-opus-5
+---
+--- a/cinnamon-session/csm-manager.c
++++ b/cinnamon-session/csm-manager.c
+@@ -129,6 +129,7 @@ struct CsmManagerPrivate
+         CsmManagerLogoutMode    logout_mode;
+         GSList                 *query_clients;
+         guint                   query_timeout_id;
++        gboolean                query_grace_used;
+         /* This is used for CSM_MANAGER_PHASE_END_SESSION only at the moment,
+          * since it uses a sublist of all running client that replied in a
+          * specific way */
+@@ -1404,12 +1405,29 @@ _generate_unique_cookie (CsmManager *man
+ static gboolean
+ _on_query_end_session_timeout (CsmManager *manager)
+ {
+-        GSList *l;
++        GSList  *l;
++        gboolean active = TRUE;
+ 
+         manager->priv->query_timeout_id = 0;
+ 
+         g_debug ("CsmManager: query end session timed out");
+ 
++        if (manager->priv->logout_mode == CSM_MANAGER_LOGOUT_MODE_NO_CONFIRMATION
++            && manager->priv->query_clients != NULL) {
++                g_object_get (manager->priv->system, "active", &active, NULL);
++
++                /* Nobody can answer a dialog in an inactive session: give the
++                 * clients that have not replied one phase timeout more, then
++                 * end the session without waiting for them. */
++                if (! active && ! manager->priv->query_grace_used) {
++                        manager->priv->query_grace_used = TRUE;
++                        manager->priv->query_timeout_id = g_timeout_add_seconds (CSM_MANAGER_PHASE_TIMEOUT,
++                                                                                 (GSourceFunc)_on_query_end_session_timeout,
++                                                                                 manager);
++                        return FALSE;
++                }
++        }
++
+         for (l = manager->priv->query_clients; l != NULL; l = l->next) {
+                 guint         cookie;
+                 CsmInhibitor *inhibitor;
+@@ -1421,7 +1439,7 @@ _on_query_end_session_timeout (CsmManage
+ 
+                 /* Don't add "not responding" inhibitors if logout is forced
+                  */
+-                if (manager->priv->logout_mode == CSM_MANAGER_LOGOUT_MODE_FORCE) {
++                if (manager->priv->logout_mode == CSM_MANAGER_LOGOUT_MODE_FORCE || ! active) {
+                         continue;
+                 }
+ 
+@@ -1485,6 +1503,7 @@ do_phase_query_end_session (CsmManager *
+ 
+         /* This phase doesn't time out unless logout is forced. Typically, this
+          * separate timer is only used to show UI. */
++        manager->priv->query_grace_used = FALSE;
+         manager->priv->query_timeout_id = g_timeout_add_seconds (1, (GSourceFunc)_on_query_end_session_timeout, manager);
+ }
+ 

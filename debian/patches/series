@@ -11,3 +11,4 @@ Take-the-idle-delay-from-the-Unity-Control-Center-in-a-Un.patch
 Take-the-session-s-logind-inhibitor-in-block-weak-mode.patch
 Connect-a-client-s-disconnected-signal-only-once.patch
 Clear-the-client-s-watch-id-when-its-IO-watch-stops.patch
+Give-clients-of-an-inactive-session-a-grace-period-befo.patch
