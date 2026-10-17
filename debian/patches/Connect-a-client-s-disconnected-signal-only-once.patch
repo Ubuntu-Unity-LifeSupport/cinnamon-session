@@ -1,0 +1,30 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Sat, 17 Oct 2026 04:30:00 +0000
+Subject: csm-manager.c: Connect a client's "disconnected" signal only once
+
+on_store_client_added() connects "disconnected" for every client added to
+the client store, and on_xsmp_client_register_request() connected it a
+second time when an XSMP client registered. on_client_disconnected() then
+ran twice for every registered XSMP client: the client was disconnected,
+its inhibitors removed and its app's restart logic run twice, and the
+store removal was repeated.
+
+XSMP clients are added to the store when their connection is accepted,
+before they can register, so the store's connection is enough.
+
+Assisted-by: Claude Code:claude-opus-5
+---
+--- a/cinnamon-session/csm-manager.c
++++ b/cinnamon-session/csm-manager.c
+@@ -2984,11 +2984,6 @@ on_xsmp_client_register_request (CsmXSMP
+ 
+         g_debug ("CsmManager: Adding new client %s to session", new_id);
+ 
+-        g_signal_connect (client,
+-                          "disconnected",
+-                          G_CALLBACK (on_client_disconnected),
+-                          manager);
+-
+         /* If it's a brand new client id, we just accept the client*/
+         if (IS_STRING_EMPTY (*id)) {
+                 goto out;
