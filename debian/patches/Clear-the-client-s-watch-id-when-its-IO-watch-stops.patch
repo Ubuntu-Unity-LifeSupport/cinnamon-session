@@ -1,0 +1,23 @@
+From: NeiroNext <mihail.rozshko@gmail.com>
+Date: Sat, 17 Oct 2026 04:35:00 +0000
+Subject: csm-xsmp-client.c: Clear the watch id when the IO watch stops
+
+When client_iochannel_watch() returns FALSE, GLib destroys the source,
+but watch_id kept its id, and csm_xsmp_client_disconnect() would remove
+it again at finalize. Clear it before the client's reference is dropped,
+since that can finalize the client.
+
+Assisted-by: Claude Code:claude-opus-5
+---
+--- a/cinnamon-session/csm-xsmp-client.c
++++ b/cinnamon-session/csm-xsmp-client.c
+@@ -107,6 +107,9 @@ client_iochannel_watch (GIOChannel    *c
+         default:
+                 g_assert_not_reached ();
+         }
++        if (! keep_going) {
++                client->priv->watch_id = 0;
++        }
+         g_object_unref (client);
+ 
+         return keep_going;
